@@ -16,7 +16,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { renderCall, renderResult } from "./render.js";
-import { getFinalAssistantText, getResultSummaryText } from "./runner-events.js";
+import { getResultSummaryText } from "./runner-events.js";
 import { runAgent } from "./runner.js";
 import {
 	type SingleResult,
@@ -228,7 +228,6 @@ export default function (pi: ExtensionAPI) {
 				}),
 			);
 
-			console.error(`[DEBUG execute] isResultError check: exitCode=${result.exitCode} stopReason=${result.stopReason} sawAgentEnd=${result.sawAgentEnd} messages.length=${result.messages.length} stderr=${result.stderr.substring(0,100)} hasFinalText=${getFinalAssistantText(result.messages).substring(0,80)}`);
 			if (isResultError(result)) {
 				return {
 					content: [
