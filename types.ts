@@ -36,7 +36,7 @@ export interface SingleResult {
 	sawAgentEnd?: boolean;
 	timeout?: boolean;
 	/** True only when the sub-agent actually reached its turn limit. */
-	maxTurns?: boolean;
+	maxTurnsExceeded?: boolean;
 	/** The configured turn limit for this run (numeric, not a hit flag). */
 	maxTurnsLimit?: number;
 }
@@ -124,7 +124,7 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 		return result;
 	}
 
-	if (result.maxTurns) {
+	if (result.maxTurnsExceeded) {
 		result.exitCode = 1;
 		result.stopReason = "max_turns";
 		if (!result.errorMessage && result.stderr.trim()) {

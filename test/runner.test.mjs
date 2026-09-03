@@ -141,7 +141,7 @@ test("normalizeCompletedResult handles timeout", () => {
 test("normalizeCompletedResult handles max turns exceeded", () => {
   const result = makeResult({
     exitCode: 1,
-    maxTurns: true,
+    maxTurnsExceeded: true,
     maxTurnsLimit: 50,
     stopReason: "max_turns",
     errorMessage: "Sub-agent exceeded maximum turns (50)",
@@ -172,7 +172,7 @@ test("isResultSuccess returns false for timeout even with semantic completion", 
 test("isResultSuccess returns false for max_turns even with semantic completion", () => {
   const result = makeResult({
     exitCode: 1,
-    maxTurns: true,
+    maxTurnsExceeded: true,
     maxTurnsLimit: 50,
     stopReason: "max_turns",
     sawAgentEnd: true,
@@ -194,7 +194,7 @@ test("normalizeCompletedResult does not flag max_turns when the limit was not re
 
   assert.equal(result.exitCode, 0);
   assert.equal(result.stopReason, undefined);
-  assert.equal(result.maxTurns, undefined);
+  assert.equal(result.maxTurnsExceeded, undefined);
   assert.equal(isResultSuccess(result), true);
   assert.equal(isResultError(result), false);
 });

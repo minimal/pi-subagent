@@ -266,9 +266,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const flushLine = (line: string) => {
         if (processPiJsonLine(line, result)) emitUpdate();
-        if (result.maxTurns) {
+        if (result.maxTurnsExceeded) {
           // Turn limit hit: kill the child so it stops making LLM calls past
-          // the limit. normalizeCompletedResult maps maxTurns to exit code 1.
+          // the limit. normalizeCompletedResult maps maxTurnsExceeded to exit code 1.
           if (!maxTurnsKillStarted) {
             maxTurnsKillStarted = true;
             terminateChild();

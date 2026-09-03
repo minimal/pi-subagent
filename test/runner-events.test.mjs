@@ -138,13 +138,13 @@ test("maxTurns enforcement stops processing when limit is reached", () => {
 
   assert.equal(result.messages.length, 3);
   assert.equal(result.usage.turns, 3);
-  assert.equal(result.maxTurns, undefined);
+  assert.equal(result.maxTurnsExceeded, undefined);
 
-  // 4th message should be blocked (maxTurns set)
+  // 4th message should be blocked (maxTurnsExceeded set)
   const blocked = processPiEvent({ type: "message_end", message: makeMsg(4) }, result);
   assert.equal(blocked, false);
   assert.equal(result.messages.length, 3);
-  assert.equal(result.maxTurns, true);
+  assert.equal(result.maxTurnsExceeded, true);
   assert.equal(result.stopReason, "max_turns");
   assert.equal(result.errorMessage, "Sub-agent exceeded maximum turns (3)");
 });
