@@ -84,6 +84,25 @@ subagent({
 `;
 
 // ---------------------------------------------------------------------------
+// Run serialization
+// ---------------------------------------------------------------------------
+
+// Only one sub-agent process runs at a time. Local LLM servers (llama.cpp)
+// typically have a single KV-cache slot; parallel sub-agents interleaving
+// turns evict the shared prefix and force full reprocessing. Calls made in
+// parallel are queued and executed back-to-back instead.
+let queueTail: Promise<void> = Promise.resolve();
+
+function withSingleFlight<T>(fn: () => Promise<T>): Promise<T> {
+	const run = queueTail.then(fn);
+	queueTail = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run;
+}
+
+// ---------------------------------------------------------------------------
 // Tool parameter schema
 // ---------------------------------------------------------------------------
 
@@ -158,6 +177,8 @@ export default function (pi: ExtensionAPI) {
 			"",
 			"The sub-agent inherits your full session context (conversation history + system prompt).",
 			"",
+			"Sub-agents run SEQUENTIALLY: only one executes at a time. If you emit multiple subagent calls in one turn they are queued and run back-to-back, so total wait is the sum of all runs. Prefer one focused call per turn; only batch independent calls when you truly need all results.",
+			"",
 			"Optional parameters:",
 			"  timeout: Max execution time in seconds (default: 120)",
 			"  maxTurns: Max LLM turns/calls (default: 50)",
@@ -185,22 +206,24 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			// Execute sub-agent
+			// Execute sub-agent (serialized: one sub-agent process at a time)
 			const timeoutMs = (params.timeout ?? 120) * 1000;
 			const maxTurns = params.maxTurns ?? 50;
 
-			const result = await runAgent({
-				cwd: ctx.cwd,
-				agentName: params.name,
-				task: params.task,
-				taskCwd: params.cwd,
-				forkSessionSnapshotJsonl,
-				signal,
-				onUpdate,
-				makeDetails: (results) => ({ results }),
-				timeout: timeoutMs,
-				maxTurns,
-			});
+			const result = await withSingleFlight(() =>
+				runAgent({
+					cwd: ctx.cwd,
+					agentName: params.name,
+					task: params.task,
+					taskCwd: params.cwd,
+					forkSessionSnapshotJsonl,
+					signal,
+					onUpdate,
+					makeDetails: (results) => ({ results }),
+					timeout: timeoutMs,
+					maxTurns,
+				}),
+			);
 
 			console.error(`[DEBUG execute] isResultError check: exitCode=${result.exitCode} stopReason=${result.stopReason} sawAgentEnd=${result.sawAgentEnd} messages.length=${result.messages.length} stderr=${result.stderr.substring(0,100)} hasFinalText=${getFinalAssistantText(result.messages).substring(0,80)}`);
 			if (isResultError(result)) {
