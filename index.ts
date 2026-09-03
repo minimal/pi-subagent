@@ -172,6 +172,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
+		// pi natively serializes any batch containing this tool call.
+		// withSingleFlight below remains as a defensive fallback.
+		executionMode: "sequential",
 		description: [
 			"Delegate work to a sub-agent running in an isolated pi process.",
 			"",
