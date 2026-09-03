@@ -35,7 +35,10 @@ export interface SingleResult {
 	errorMessage?: string;
 	sawAgentEnd?: boolean;
 	timeout?: boolean;
+	/** True only when the sub-agent actually reached its turn limit. */
 	maxTurns?: boolean;
+	/** The configured turn limit for this run (numeric, not a hit flag). */
+	maxTurnsLimit?: number;
 }
 
 /** Metadata attached to every tool result for rendering. */
