@@ -199,7 +199,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     const piArgs = buildPiArgs(task, forkSessionTmpPath, taskCwd);
     let wasAborted = false;
     let timedOut = false;
-    let exceededMaxTurns = false;
 
     const exitCode = await new Promise<number>((resolve) => {
       const { command, prefixArgs } = resolvePiSpawn();
@@ -221,6 +220,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let buffer = "";
       let didClose = false;
       let settled = false;
+      let maxTurnsKillStarted = false;
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let timeoutTimer: NodeJS.Timeout | undefined;
@@ -265,8 +265,16 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const flushLine = (line: string) => {
-        if (exceededMaxTurns) return;
         if (processPiJsonLine(line, result)) emitUpdate();
+        if (result.maxTurns) {
+          // Turn limit hit: kill the child so it stops making LLM calls past
+          // the limit. normalizeCompletedResult maps maxTurns to exit code 1.
+          if (!maxTurnsKillStarted) {
+            maxTurnsKillStarted = true;
+            terminateChild();
+          }
+          return;
+        }
         maybeFinishFromAgentEnd();
       };
 
