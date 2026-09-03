@@ -91,6 +91,13 @@ You can fork this repo and add in model selection as a parameter.
 
 TODO: The cwd will break the KV cache because pi itself injects the current working dir into the system prompt. Advise telling your LLM to leave that param unset.
 
+### Sequential Execution
+
+Sub-agents run **one at a time**. If the main agent emits multiple `subagent` calls in a single turn, they are queued and executed back-to-back. This is intentional: a local LLM server (llama.cpp) typically has a single KV-cache slot, and two sub-agents interleaving turns evict the shared prefix and force full reprocessing on every handoff.
+
+- A queued call's `timeout` starts when it actually begins running, not while it waits in the queue.
+- The tool description tells the model about this behavior, so it tends to emit one focused call per turn.
+
 ### How It Works
 
 **What Gets Sent to Sub-Agents:**
@@ -173,6 +180,7 @@ subagent({
 - **Full Context Inheritance** — Sub-agents receive the complete session context via JSONL snapshot.
 - **Auto-Injection** — Sub-agent instructions are injected into the system prompt at startup (constant text, KV cache stable).
 - **Recursion Guard** — Sub-agents cannot spawn further sub-agents. Enforced at the runner level by blocking `subagent` tool calls.
+- **Sequential Execution** — Only one sub-agent process runs at a time; parallel calls are queued, keeping the single KV-cache slot stable.
 - **Timeout & Max Turns** — Configurable safeguards against runaway sub-agents (default: 120s timeout, 50 max turns).
 - **Streaming Updates** — Watch sub-agent progress in real-time as tool calls and outputs stream in.
 - **Rich TUI Rendering** — Collapsed/expanded views with usage stats and tool call previews.
