@@ -98,6 +98,23 @@ Sub-agents run **one at a time**. If the main agent emits multiple `subagent` ca
 - A queued call's `timeout` starts when it actually begins running, not while it waits in the queue.
 - The tool description tells the model about this behavior, so it tends to emit one focused call per turn.
 
+### Session Persistence
+
+Every sub-agent run is saved as a resumable session file under `~/.pi/agent/sessions/subagents/` (or `$PI_CODING_AGENT_DIR/sessions/subagents/` when that env var is set):
+
+```
+~/.pi/agent/sessions/subagents/2026-09-03T14-42-09-researcher.jsonl
+```
+
+Each file contains the forked parent history plus the sub-agent's own turns, so you can reopen the run directly:
+
+```bash
+pi --session ~/.pi/agent/sessions/subagents/2026-09-03T14-42-09-researcher.jsonl
+```
+
+- The result view shows the saved file path as a dim `session:` line.
+- Only the newest 20 session files are kept; older ones are pruned automatically. Set `PI_SUBAGENT_SESSION_KEEP` to change the retention count.
+
 ### How It Works
 
 **What Gets Sent to Sub-Agents:**
@@ -181,6 +198,7 @@ subagent({
 - **Auto-Injection** — Sub-agent instructions are injected into the system prompt at startup (constant text, KV cache stable).
 - **Recursion Guard** — Sub-agents cannot spawn further sub-agents. Enforced at the runner level by blocking `subagent` tool calls.
 - **Sequential Execution** — Only one sub-agent process runs at a time; parallel calls are queued, keeping the single KV-cache slot stable.
+- **Session Persistence** — Every run is saved as a resumable session file (`pi --session <file>`), pruned to the newest 20 by default (`PI_SUBAGENT_SESSION_KEEP`).
 - **Timeout & Max Turns** — Configurable safeguards against runaway sub-agents (default: 120s timeout, 50 max turns).
 - **Streaming Updates** — Watch sub-agent progress in real-time as tool calls and outputs stream in.
 - **Rich TUI Rendering** — Collapsed/expanded views with usage stats and tool call previews.

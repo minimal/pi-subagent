@@ -39,6 +39,8 @@ export interface SingleResult {
 	maxTurnsExceeded?: boolean;
 	/** The configured turn limit for this run (numeric, not a hit flag). */
 	maxTurnsLimit?: number;
+	/** Persistent session file for this run, if one was kept. */
+	sessionFile?: string;
 }
 
 /** Metadata attached to every tool result for rendering. */

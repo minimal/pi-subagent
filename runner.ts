@@ -67,6 +67,73 @@ function cleanupTempDir(dir: string | null): void {
 }
 
 // ---------------------------------------------------------------------------
+// Persistent sub-agent session files
+// ---------------------------------------------------------------------------
+
+const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const SESSION_KEEP_ENV = "PI_SUBAGENT_SESSION_KEEP";
+const DEFAULT_SESSION_KEEP = 20;
+
+function expandTilde(input: string): string {
+  if (input === "~") return os.homedir();
+  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
+/** Directory where per-run sub-agent session files are kept. */
+export function getSubagentSessionDir(): string {
+  const configured = process.env[AGENT_DIR_ENV]?.trim();
+  const agentDir = configured
+    ? expandTilde(configured)
+    : path.join(os.homedir(), ".pi", "agent");
+  return path.join(agentDir, "sessions", "subagents");
+}
+
+function sanitizeAgentName(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 40);
+  return cleaned || "subagent";
+}
+
+/**
+ * Copy a run's session file (forked parent history + sub-agent turns) into the
+ * persistent sub-agent session directory. Returns the destination path, or
+ * null when persistence fails (never breaks the run itself).
+ */
+export function persistSubagentSession(tmpSessionPath: string, agentName: string): string | null {
+  try {
+    const dir = getSubagentSessionDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/:/g, "-").replace(/\.\d+Z$/, "");
+    const dest = path.join(dir, `${stamp}-${sanitizeAgentName(agentName)}.jsonl`);
+    fs.copyFileSync(tmpSessionPath, dest);
+    pruneSubagentSessions(dir);
+    return dest;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep only the newest `keep` session files; filenames sort chronologically. */
+export function pruneSubagentSessions(dir: string, keep?: number): void {
+  const configured = Number.parseInt(process.env[SESSION_KEEP_ENV] ?? "", 10);
+  const limit =
+    keep ?? (Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_SESSION_KEEP);
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+  } catch {
+    return;
+  }
+  for (const file of files.slice(limit)) {
+    try {
+      fs.rmSync(path.join(dir, file), { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Build pi CLI arguments
 // ---------------------------------------------------------------------------
 
@@ -362,6 +429,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     result.exitCode = exitCode;
     return normalizeCompletedResult(result, wasAborted);
   } finally {
+    // Keep a persistent copy of the run's session file (forked parent history
+    // + the sub-agent's own turns) before the temp dir is cleaned up.
+    if (forkSessionTmpPath) {
+      const persisted = persistSubagentSession(forkSessionTmpPath, agentName);
+      if (persisted) result.sessionFile = persisted;
+    }
     cleanupTempDir(forkSessionTmpDir);
   }
 }

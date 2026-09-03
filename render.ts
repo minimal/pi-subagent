@@ -248,6 +248,12 @@ function renderSingleExpanded(
 		container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
 	}
 
+	// Persistent session file (resumable via `pi --session <file>`)
+	if (r.sessionFile) {
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("dim", `session: ${shortenPath(r.sessionFile)}`), 0, 0));
+	}
+
 	return container;
 }
 
@@ -274,5 +280,6 @@ function renderSingleCollapsed(
 
 	const usageStr = formatUsage(r.usage, r.model);
 	if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
+	if (r.sessionFile) text += `\n${theme.fg("dim", `session: ${shortenPath(r.sessionFile)}`)}`;
 	return new Text(text, 0, 0);
 }
