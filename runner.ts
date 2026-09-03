@@ -130,6 +130,8 @@ export interface RunAgentOptions {
   timeout?: number;
   /** Maximum number of assistant turns (LLM calls). Default: 50. */
   maxTurns?: number;
+  /** Test hook: override the pi spawn command (used by tests with a fake pi). */
+  testSpawn?: { command: string; prefixArgs?: string[] };
 }
 
 /**
@@ -149,6 +151,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     makeDetails,
     timeout = 120_000,
     maxTurns = 50,
+    testSpawn,
   } = opts;
 
   if (!forkSessionSnapshotJsonl || !forkSessionSnapshotJsonl.trim()) {
@@ -201,7 +204,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     let timedOut = false;
 
     const exitCode = await new Promise<number>((resolve) => {
-      const { command, prefixArgs } = resolvePiSpawn();
+      const { command, prefixArgs = [] } = testSpawn ?? resolvePiSpawn();
       const proc = spawn(command, [...prefixArgs, ...piArgs], {
         cwd: taskCwd ?? cwd,
         shell: false,
