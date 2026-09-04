@@ -271,40 +271,60 @@ export default function (pi: ExtensionAPI) {
 			renderResult(result, expanded, theme),
 	});
 
-	// --- Sub-agent child mode ---------------------------------------------
-	// When this process was spawned as a sub-agent (PI_SUBAGENT_CHILD=1),
-	// expose its own budget and warn once when the time budget runs low.
-	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
-		const childTimeoutMs = Number(process.env[TIMEOUT_ENV]) || DEFAULT_TIMEOUT_MS;
-		const childMaxTurns = Number(process.env[MAX_TURNS_ENV]) || DEFAULT_MAX_TURNS;
-		const childStartedAtMs = Number(process.env[STARTED_AT_ENV]) || Date.now();
-		let turnsUsed = 0;
-		pi.on("turn_start", () => {
-			turnsUsed++;
-		});
-
-		pi.registerTool({
-			name: "subagent_budget",
-			label: "Budget",
-			description:
-				"Check remaining time and turns for this sub-agent run. Call it before starting substantial work when the budget may be tight.",
-			parameters: Type.Object({}),
-			async execute() {
+	// Register subagent_budget in BOTH parent and child processes, right
+	// after the subagent tool, with an identical definition. The local LLM
+	// server renders tool definitions into the fixed prompt prefix, so
+	// parent and child must send byte-identical tool lists at the same
+	// position; otherwise the child's first call loses the parent's cached
+	// KV prefix (bead pi-subagent-ln6). In the parent the tool is a guarded
+	// no-op: the budget only exists inside a sub-agent process.
+	let turnsUsed = 0;
+	pi.registerTool({
+		name: "subagent_budget",
+		label: "Budget",
+		description:
+			"Check remaining time and turns for this sub-agent run. Call it before starting substantial work when the budget may be tight.",
+		parameters: Type.Object({}),
+		async execute() {
+			if (process.env[SUBAGENT_CHILD_ENV] !== "1") {
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: describeSubagentBudget(
-								Date.now(),
-								childStartedAtMs,
-								childTimeoutMs,
-								childMaxTurns,
-								turnsUsed,
-							),
+							text: "subagent_budget is only available inside a sub-agent process.",
 						},
 					],
+					isError: true,
 				};
-			},
+			}
+			const childTimeoutMs = Number(process.env[TIMEOUT_ENV]) || DEFAULT_TIMEOUT_MS;
+			const childMaxTurns = Number(process.env[MAX_TURNS_ENV]) || DEFAULT_MAX_TURNS;
+			const childStartedAtMs = Number(process.env[STARTED_AT_ENV]) || Date.now();
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: describeSubagentBudget(
+							Date.now(),
+							childStartedAtMs,
+							childTimeoutMs,
+							childMaxTurns,
+							turnsUsed,
+						),
+					},
+				],
+			};
+		},
+	});
+
+	// --- Sub-agent child mode ---------------------------------------------
+	// When this process was spawned as a sub-agent (PI_SUBAGENT_CHILD=1),
+	// count turns and warn once when the time budget runs low.
+	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
+		const childTimeoutMs = Number(process.env[TIMEOUT_ENV]) || DEFAULT_TIMEOUT_MS;
+		const childStartedAtMs = Number(process.env[STARTED_AT_ENV]) || Date.now();
+		pi.on("turn_start", () => {
+			turnsUsed++;
 		});
 
 		// One-shot low-budget warning, injected as a steering message so the
