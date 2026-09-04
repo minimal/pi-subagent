@@ -70,7 +70,7 @@ npm install
 subagent({
   name: "researcher",     // Freeform name (human-like, for your reference)
   task: "Research the latest about quantum computing",
-  timeout: 180,           // Optional: max seconds (default: 120)
+  timeout: 180,           // Optional: max seconds (default: 600)
   maxTurns: 80,           // Optional: max LLM turns (default: 50)
   cwd: "/path/to/dir"     // Optional: working directory
 })
@@ -90,6 +90,15 @@ You can fork this repo and add in model selection as a parameter.
 | `cwd` | No | Parent cwd | Working directory for the sub-agent process. | 
 
 TODO: The cwd will break the KV cache because pi itself injects the current working dir into the system prompt. Advise telling your LLM to leave that param unset.
+
+### Time Budget
+
+Every run gets a wall-clock limit (`timeout`, default **600s**) and a turn limit (`maxTurns`, default **50**), stated up front in the task message. Sub-agents manage the budget with:
+
+- **`subagent_budget` tool** — registered in the child process only; the sub-agent can check remaining time and turn usage at any time.
+- **Automated warning** — when remaining time drops to ~25% of the limit (clamped to 60–240s), a steering message is injected telling the sub-agent to stop new work and write its final report.
+- **Timeout grace** — when the limit is hit the child is *not* killed immediately: it gets up to 180s (override with `PI_SUBAGENT_TIMEOUT_GRACE_MS`) to finish its in-flight turn and exit cleanly. Only a child still running after the grace period is SIGTERM→SIGKILL'ed, so final reports in progress are not lost.
+- **No output = error** — if the child exits cleanly but produced no final text (e.g. a thinking-only response), the result is reported to the parent as an error instead of a hollow success.
 
 ### Sequential Execution
 
@@ -124,6 +133,7 @@ pi --session ~/.pi/agent/sessions/subagents/2026-09-03T14-42-09-researcher.jsonl
 [Same system prompt as the main agent]
 
 User: [sub-agent-task] Complete this task:
+Budget: at most 600s wall-clock and 50 assistant turns. ...
 {task description}
 ```
 
@@ -199,7 +209,7 @@ subagent({
 - **Recursion Guard** — Sub-agents cannot spawn further sub-agents. Enforced at the runner level by blocking `subagent` tool calls.
 - **Sequential Execution** — Only one sub-agent process runs at a time; parallel calls are queued, keeping the single KV-cache slot stable.
 - **Session Persistence** — Every run is saved as a resumable session file (`pi --session <file>`), pruned to the newest 20 by default (`PI_SUBAGENT_SESSION_KEEP`).
-- **Timeout & Max Turns** — Configurable safeguards against runaway sub-agents (default: 120s timeout, 50 max turns).
+- **Timeout & Max Turns** — Configurable safeguards against runaway sub-agents (default: 600s timeout, 50 max turns), with a low-budget warning injected into the sub-agent and a grace period before the kill (see [Time Budget](#time-budget)).
 - **Streaming Updates** — Watch sub-agent progress in real-time as tool calls and outputs stream in.
 - **Rich TUI Rendering** — Collapsed/expanded views with usage stats and tool call previews.
 

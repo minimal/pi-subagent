@@ -85,7 +85,12 @@ export function hasSemanticCompletion(r: Pick<SingleResult, "messages" | "sawAge
 /** Whether a result should be treated as successful by the wrapper/UI. */
 export function isResultSuccess(r: SingleResult): boolean {
 	if (r.exitCode === -1) return false;
-	if (r.stopReason === "timeout" || r.stopReason === "max_turns") return false;
+	if (
+		r.stopReason === "timeout" ||
+		r.stopReason === "max_turns" ||
+		r.stopReason === "no_output"
+	)
+		return false;
 	if (hasSemanticCompletion(r)) return true;
 	return r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted";
 }
@@ -133,6 +138,15 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 			result.errorMessage = result.stderr.trim();
 		}
 		if (!result.stderr.trim()) result.stderr = result.errorMessage || "Sub-agent exceeded maximum turns.";
+		return result;
+	}
+
+	if (result.exitCode === 0 && !hasFinalAssistantOutput(result)) {
+		// Exited cleanly but produced no final assistant text (e.g. a
+		// thinking-only response). The caller got nothing useful.
+		result.stopReason = "no_output";
+		result.errorMessage = "Sub-agent finished without a final text report.";
+		result.stderr = result.errorMessage;
 		return result;
 	}
 

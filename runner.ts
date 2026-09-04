@@ -24,11 +24,22 @@ import {
   getFinalOutput,
   normalizeCompletedResult,
 } from "./types.js";
+import { buildChildEnv, buildTaskMessage, DEFAULT_TIMEOUT_MS } from "./budget.js";
 
 const isWindows = process.platform === "win32";
 const SIGKILL_TIMEOUT_MS = 5000;
 const AGENT_END_GRACE_MS = 250;
+/** Post-deadline grace: let the child finish its final report before killing. */
+const TIMEOUT_GRACE_MS = 180_000;
+/** Extra time allowed after SIGKILL for stdout to drain before force-resolving. */
+const KILL_DRAIN_MS = 3_000;
 const PI_OFFLINE_ENV = "PI_OFFLINE";
+
+/** Post-deadline grace period in ms (PI_SUBAGENT_TIMEOUT_GRACE_MS overrides for tests). */
+function resolveTimeoutGraceMs(): number {
+  const v = Number(process.env.PI_SUBAGENT_TIMEOUT_GRACE_MS);
+  return Number.isFinite(v) && v >= 0 ? v : TIMEOUT_GRACE_MS;
+}
 
 type OnUpdateCallback = (partial: AgentToolResult) => void;
 
@@ -143,6 +154,8 @@ function buildPiArgs(
   task: string,
   forkSessionPath: string | null,
   taskCwd: string | undefined,
+  timeoutMs: number,
+  maxTurns: number,
 ): string[] {
   const args: string[] = [
     "--mode",
@@ -166,8 +179,8 @@ function buildPiArgs(
   // NO --append-system-prompt! The sub-agent inherits the main agent's
   // system prompt (Pi default + APPEND_SYSTEM.md) automatically.
 
-  // Task message with sub-agent marker
-  const taskMessage = `[sub-agent-task] Complete this task:\n${task}`;
+  // Task message with sub-agent marker and the run's budget
+  const taskMessage = buildTaskMessage(task, timeoutMs, maxTurns);
   args.push(taskMessage);
   return args;
 }
@@ -193,7 +206,7 @@ export interface RunAgentOptions {
   onUpdate?: OnUpdateCallback;
   /** Factory to wrap results into SubagentDetails. */
   makeDetails: (results: SingleResult[]) => { results: SingleResult[] };
-  /** Maximum execution time in milliseconds. Default: 120000 (120s). */
+  /** Maximum execution time in milliseconds. Default: 600000 (600s). */
   timeout?: number;
   /** Maximum number of assistant turns (LLM calls). Default: 50. */
   maxTurns?: number;
@@ -216,7 +229,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     signal,
     onUpdate,
     makeDetails,
-    timeout = 120_000,
+    timeout = DEFAULT_TIMEOUT_MS,
     maxTurns = 50,
     testSpawn,
   } = opts;
@@ -266,7 +279,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
   }
 
   try {
-    const piArgs = buildPiArgs(task, forkSessionTmpPath, taskCwd);
+    const startedAtMs = Date.now();
+    const piArgs = buildPiArgs(
+      task,
+      forkSessionTmpPath,
+      taskCwd,
+      timeout,
+      maxTurns,
+    );
     let wasAborted = false;
     let timedOut = false;
 
@@ -279,6 +299,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         env: {
           ...process.env,
           [PI_OFFLINE_ENV]: "1",
+          ...buildChildEnv(timeout, maxTurns, startedAtMs),
         },
       });
 
@@ -294,6 +315,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let timeoutTimer: NodeJS.Timeout | undefined;
+      let graceTimer: NodeJS.Timeout | undefined;
+      let hardStopBackstop: NodeJS.Timeout | undefined;
 
       const clearTimers = () => {
         if (semanticCompletionTimer) {
@@ -303,6 +326,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (timeoutTimer) {
           clearTimeout(timeoutTimer);
           timeoutTimer = undefined;
+        }
+        if (graceTimer) {
+          clearTimeout(graceTimer);
+          graceTimer = undefined;
+        }
+        if (hardStopBackstop) {
+          clearTimeout(hardStopBackstop);
+          hardStopBackstop = undefined;
         }
       };
 
@@ -385,19 +416,27 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       proc.stdout.on("data", onStdoutData);
       proc.stderr.on("data", onStderrData);
 
-      // Timeout handling
-      timeoutTimer = setTimeout(() => {
-        if (didClose || settled) return;
+      // Timeout handling: at the deadline, give the child a grace period to
+      // finish its final report and exit cleanly (it was warned to wrap up).
+      // Only if it is still running when the grace expires do we kill it.
+      const hardStop = () => {
         timedOut = true;
         result.timeout = true;
         result.exitCode = 124;
         result.stopReason = "timeout";
-        result.errorMessage = `Sub-agent timed out after ${timeout / 1000}s`;
-        result.stderr = `Sub-agent timed out after ${timeout / 1000}s`;
+        result.errorMessage = `Sub-agent exceeded its ${timeout / 1000}s time budget`;
+        result.stderr = result.errorMessage;
         terminateChild();
-        setTimeout(() => {
+        hardStopBackstop = setTimeout(() => {
           if (!settled) finish(124);
-        }, SIGKILL_TIMEOUT_MS + 500);
+        }, SIGKILL_TIMEOUT_MS + KILL_DRAIN_MS);
+        hardStopBackstop.unref?.();
+      };
+
+      timeoutTimer = setTimeout(() => {
+        if (didClose || settled) return;
+        graceTimer = setTimeout(hardStop, resolveTimeoutGraceMs());
+        graceTimer.unref?.();
       }, timeout);
 
       proc.on("close", (code) => {

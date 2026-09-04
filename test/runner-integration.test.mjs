@@ -11,6 +11,7 @@ import {
 	pruneSubagentSessions,
 } from "../runner.ts";
 import { isResultError, isResultSuccess } from "../types.ts";
+import { getFinalAssistantText, getResultSummaryText } from "../runner-events.js";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(testDir, "fixtures");
@@ -44,7 +45,7 @@ function runAgentWithFixture(fixtureName, opts = {}) {
 		agentName: opts.agentName ?? "fixture",
 		task: "integration test task",
 		forkSessionSnapshotJsonl: makeForkSnapshot(),
-		timeout: 30_000,
+		timeout: opts.timeout ?? 30_000,
 		maxTurns: opts.maxTurns ?? 50,
 		makeDetails: (results) => ({ results }),
 		testSpawn: {
@@ -199,5 +200,107 @@ test("pruneSubagentSessions keeps only the newest sessions", () => {
 		]);
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("runAgent lets a child finish its final report inside the timeout grace", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, () =>
+			withEnv("PI_SUBAGENT_TIMEOUT_GRACE_MS", "5000", () =>
+				withEnv("FAKE_PI_DELAY_MS", "1500", async () => {
+					const result = await runAgentWithFixture("fake-pi-grace.mjs", {
+						agentName: "grace-tester",
+						timeout: 800,
+					});
+
+					assert.equal(result.timeout, undefined);
+					assert.equal(result.exitCode, 0);
+					assert.equal(isResultSuccess(result), true);
+					assert.equal(
+						getFinalAssistantText(result.messages),
+						"Final report delivered after the deadline.",
+					);
+				}),
+			),
+		);
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});
+
+test("runAgent hard-stops a child still running after the timeout grace", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, () =>
+			withEnv("PI_SUBAGENT_TIMEOUT_GRACE_MS", "1000", async () => {
+				const started = Date.now();
+				const result = await runAgentWithFixture("fake-pi-hang.mjs", {
+					agentName: "hang-tester",
+					timeout: 500,
+				});
+				const elapsedMs = Date.now() - started;
+
+				assert.equal(result.timeout, true);
+				assert.equal(result.exitCode, 124);
+				assert.equal(result.stopReason, "timeout");
+				assert.equal(isResultSuccess(result), false);
+				assert.equal(isResultError(result), true);
+				assert.ok(
+					elapsedMs < 10_000,
+					`child should be killed after deadline + grace (took ${elapsedMs}ms)`,
+				);
+			}),
+		);
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});
+
+test("runAgent passes the budget env and task preamble to the child", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, async () => {
+			const result = await runAgentWithFixture("fake-pi-env.mjs", {
+				agentName: "env-tester",
+			});
+
+			assert.equal(isResultSuccess(result), true);
+			const payload = JSON.parse(getFinalAssistantText(result.messages));
+			assert.equal(payload.child, "1");
+			assert.equal(payload.timeoutMs, "30000");
+			assert.equal(payload.maxTurns, "50");
+			assert.equal(payload.haveStartedAt, true);
+			assert.ok(payload.task.startsWith("[sub-agent-task]"));
+			assert.ok(payload.task.includes("Budget:"));
+			assert.ok(payload.task.includes("subagent_budget"));
+		});
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});
+
+test("runAgent treats an exit-0 child with no final text as an error", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, async () => {
+			const result = await runAgentWithFixture("fake-pi-nooutput.mjs", {
+				agentName: "nooutput-tester",
+			});
+
+			assert.equal(result.stopReason, "no_output");
+			assert.equal(isResultSuccess(result), false);
+			assert.equal(isResultError(result), true);
+			assert.ok(
+				getResultSummaryText(result).includes("final text report"),
+				"summary should explain the missing report",
+			);
+		});
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
 	}
 });

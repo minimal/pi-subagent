@@ -24,6 +24,17 @@ import {
 	isResultError,
 	isResultSuccess,
 } from "./types.js";
+import {
+	SUBAGENT_CHILD_ENV,
+	TIMEOUT_ENV,
+	MAX_TURNS_ENV,
+	STARTED_AT_ENV,
+	DEFAULT_TIMEOUT_MS,
+	DEFAULT_MAX_TURNS,
+	budgetStatus,
+	describeSubagentBudget,
+	budgetWarningText,
+} from "./budget.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -81,6 +92,10 @@ subagent({
 2. Set appropriate timeouts for long-running tasks
 3. Let sub-agents write results to files — you can read them back
 4. Use sub-agents to consolidate knowledge into summaries before bringing it back into your context
+
+### Budget
+
+Every sub-agent run has a wall-clock time limit and an assistant-turn limit, stated at the top of the task. In sub-agent mode, use the \`subagent_budget\` tool to check remaining budget before committing to substantial work. An automated warning is injected into the sub-agent when its budget runs low; when you see it (or see little time left in the budget tool), stop new work and write your final report.
 `;
 
 // ---------------------------------------------------------------------------
@@ -183,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 			"Sub-agents run SEQUENTIALLY: only one executes at a time. If you emit multiple subagent calls in one turn they are queued and run back-to-back, so total wait is the sum of all runs. Prefer one focused call per turn; only batch independent calls when you truly need all results.",
 			"",
 			"Optional parameters:",
-			"  timeout: Max execution time in seconds (default: 120)",
+			"  timeout: Max execution time in seconds (default: 600)",
 			"  maxTurns: Max LLM turns/calls (default: 50)",
 			"",
 			"Example: { name: \"researcher\", task: \"Research the latest about quantum computing\", timeout: 180 }",
@@ -210,7 +225,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Execute sub-agent (serialized: one sub-agent process at a time)
-			const timeoutMs = (params.timeout ?? 120) * 1000;
+			const timeoutMs = (params.timeout ?? 600) * 1000;
 			const maxTurns = params.maxTurns ?? 50;
 
 			const result = await withSingleFlight(() =>
@@ -255,4 +270,61 @@ export default function (pi: ExtensionAPI) {
 		renderResult: (result, { expanded }, theme) =>
 			renderResult(result, expanded, theme),
 	});
+
+	// --- Sub-agent child mode ---------------------------------------------
+	// When this process was spawned as a sub-agent (PI_SUBAGENT_CHILD=1),
+	// expose its own budget and warn once when the time budget runs low.
+	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
+		const childTimeoutMs = Number(process.env[TIMEOUT_ENV]) || DEFAULT_TIMEOUT_MS;
+		const childMaxTurns = Number(process.env[MAX_TURNS_ENV]) || DEFAULT_MAX_TURNS;
+		const childStartedAtMs = Number(process.env[STARTED_AT_ENV]) || Date.now();
+		let turnsUsed = 0;
+		pi.on("turn_start", () => {
+			turnsUsed++;
+		});
+
+		pi.registerTool({
+			name: "subagent_budget",
+			label: "Budget",
+			description:
+				"Check remaining time and turns for this sub-agent run. Call it before starting substantial work when the budget may be tight.",
+			parameters: Type.Object({}),
+			async execute() {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: describeSubagentBudget(
+								Date.now(),
+								childStartedAtMs,
+								childTimeoutMs,
+								childMaxTurns,
+								turnsUsed,
+							),
+						},
+					],
+				};
+			},
+		});
+
+		// One-shot low-budget warning, injected as a steering message so the
+		// model sees it before its next LLM call.
+		let warned = false;
+		const watcher = setInterval(() => {
+			if (warned) return;
+			const status = budgetStatus(Date.now(), childStartedAtMs, childTimeoutMs);
+			if (!status.shouldWarn) return;
+			warned = true;
+			clearInterval(watcher);
+			try {
+				pi.sendUserMessage(
+					budgetWarningText(Date.now(), childStartedAtMs, childTimeoutMs),
+					{ deliverAs: "steer" },
+				);
+			} catch {
+				// Best effort: a failed warn must never break the run.
+			}
+		}, 5_000);
+		watcher.unref?.();
+	}
 }
