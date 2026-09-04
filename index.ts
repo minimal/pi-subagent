@@ -31,7 +31,9 @@ import {
 	STARTED_AT_ENV,
 	DEFAULT_TIMEOUT_MS,
 	DEFAULT_MAX_TURNS,
-	budgetStatus,
+	budgetWarningOnTick,
+	budgetWarningOnTurnEnd,
+	createBudgetWarningState,
 	describeSubagentBudget,
 	budgetWarningText,
 } from "./budget.js";
@@ -323,19 +325,25 @@ export default function (pi: ExtensionAPI) {
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
 		const childTimeoutMs = Number(process.env[TIMEOUT_ENV]) || DEFAULT_TIMEOUT_MS;
 		const childStartedAtMs = Number(process.env[STARTED_AT_ENV]) || Date.now();
-		pi.on("turn_start", () => {
-			turnsUsed++;
-		});
+		// Test hook: override the watchdog tick interval (default 5s).
+		const watchdogMs = Number(process.env.PI_SUBAGENT_WATCHDOG_MS) || 5_000;
+		const warning = createBudgetWarningState();
+		let watcher: ReturnType<typeof setInterval> | undefined;
+
+		const stopWatching = () => {
+			if (watcher) {
+				clearInterval(watcher);
+				watcher = undefined;
+			}
+		};
 
 		// One-shot low-budget warning, injected as a steering message so the
-		// model sees it before its next LLM call.
-		let warned = false;
-		const watcher = setInterval(() => {
-			if (warned) return;
-			const status = budgetStatus(Date.now(), childStartedAtMs, childTimeoutMs);
-			if (!status.shouldWarn) return;
-			warned = true;
-			clearInterval(watcher);
+		// model sees it before its next LLM call. Never sent after a final
+		// report (bead pi-subagent-l72).
+		const sendWarning = () => {
+			warning.pending = false;
+			warning.settled = true;
+			stopWatching();
 			try {
 				pi.sendUserMessage(
 					budgetWarningText(Date.now(), childStartedAtMs, childTimeoutMs),
@@ -344,7 +352,32 @@ export default function (pi: ExtensionAPI) {
 			} catch {
 				// Best effort: a failed warn must never break the run.
 			}
-		}, 5_000);
+		};
+
+		pi.on("turn_start", () => {
+			turnsUsed++;
+			warning.turnActive = true;
+		});
+
+		pi.on("turn_end", (event) => {
+			warning.turnActive = false;
+			const message = event?.message;
+			const stopReason =
+				message && message.role === "assistant" ? message.stopReason : undefined;
+			const action = budgetWarningOnTurnEnd(warning, stopReason);
+			if (action === "send") sendWarning();
+			else if (action === "drop") stopWatching();
+		});
+
+		watcher = setInterval(() => {
+			const action = budgetWarningOnTick(
+				warning,
+				Date.now(),
+				childStartedAtMs,
+				childTimeoutMs,
+			);
+			if (action === "send") sendWarning();
+		}, watchdogMs);
 		watcher.unref?.();
 	}
 }

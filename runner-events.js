@@ -81,11 +81,22 @@ export function processPiEvent(event, result) {
   // Check max turns limit before processing new events.
   // maxTurnsLimit is the numeric limit; maxTurnsExceeded is the "limit hit" flag.
   if (result.maxTurnsLimit !== undefined && result.usage.turns >= result.maxTurnsLimit) {
-    result.maxTurnsExceeded = true;
-    result.stopReason = "max_turns";
-    result.errorMessage = `Sub-agent exceeded maximum turns (${result.maxTurnsLimit})`;
-    result.stderr = `Sub-agent exceeded maximum turns (${result.maxTurnsLimit})`;
-    return false;
+    // The child used its full turn budget. If it ended exactly on a clean
+    // final report (last assistant message stopped with non-empty text, no
+    // pending tool calls), the task is done: let the run end naturally
+    // instead of failing a completed run (bead pi-subagent-l72). Only
+    // turn_end/agent_end may pass: they introduce no new assistant message,
+    // while any further assistant message is over budget and gets blocked.
+    const cleanFinalReport =
+      (event.type === "turn_end" || event.type === "agent_end") &&
+      isFinalReportMessage(result.messages);
+    if (!cleanFinalReport) {
+      result.maxTurnsExceeded = true;
+      result.stopReason = "max_turns";
+      result.errorMessage = `Sub-agent exceeded maximum turns (${result.maxTurnsLimit})`;
+      result.stderr = `Sub-agent exceeded maximum turns (${result.maxTurnsLimit})`;
+      return false;
+    }
   }
 
   // Block sub-agents from spawning further sub-agents
@@ -132,6 +143,25 @@ export function processPiJsonLine(line, result) {
   }
 
   return processPiEvent(event, result);
+}
+
+/**
+ * Whether the child's most recent assistant message is a final report:
+ * the model stopped without pending tool calls and produced non-empty text.
+ */
+function isFinalReportMessage(messages) {
+  if (!Array.isArray(messages)) return false;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!message || message.role !== "assistant") continue;
+    const hasText = (message.content ?? []).some(
+      (part) => part?.type === "text" && typeof part.text === "string" && part.text.length > 0,
+    );
+    return message.stopReason === "stop" && hasText;
+  }
+
+  return false;
 }
 
 export function getFinalAssistantText(messages) {

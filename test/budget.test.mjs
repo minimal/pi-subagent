@@ -4,7 +4,10 @@ import {
 	budgetStatus,
 	buildChildEnv,
 	buildTaskMessage,
+	budgetWarningOnTick,
+	budgetWarningOnTurnEnd,
 	budgetWarningText,
+	createBudgetWarningState,
 	describeSubagentBudget,
 	warnRemainingMs,
 } from "../budget.ts";
@@ -58,4 +61,44 @@ test("buildChildEnv passes the budget to the child", () => {
 		PI_SUBAGENT_MAX_TURNS: "50",
 		PI_SUBAGENT_STARTED_AT_MS: "12345",
 	});
+});
+
+test("warning is dropped when the in-flight turn ends with a final report", () => {
+	const state = createBudgetWarningState();
+	state.turnActive = true;
+
+	// Threshold crossed mid-turn: the decision is deferred, not sent yet.
+	assert.equal(budgetWarningOnTick(state, 510_000, 0, 600_000), "hold");
+
+	// The in-flight turn was the final report: the warning must be dropped,
+	// otherwise it lands after the report and burns an extra turn.
+	assert.equal(budgetWarningOnTurnEnd(state, "stop"), "drop");
+
+	// Settled: nothing more can happen, even if the threshold is deep inside.
+	assert.equal(budgetWarningOnTick(state, 590_000, 0, 600_000), "none");
+	assert.equal(budgetWarningOnTurnEnd(state, "toolUse"), "none");
+});
+
+test("warning is sent at turn end while the child is still calling tools", () => {
+	const state = createBudgetWarningState();
+	state.turnActive = true;
+
+	assert.equal(budgetWarningOnTick(state, 510_000, 0, 600_000), "hold");
+	assert.equal(budgetWarningOnTurnEnd(state, "toolUse"), "send");
+	assert.equal(budgetWarningOnTick(state, 590_000, 0, 600_000), "none");
+});
+
+test("warning is sent immediately when no turn is in flight", () => {
+	const state = createBudgetWarningState();
+	assert.equal(budgetWarningOnTick(state, 300_000, 0, 600_000), "none");
+	assert.equal(budgetWarningOnTick(state, 510_000, 0, 600_000), "send");
+});
+
+test("warning stays quiet until the threshold and sends nothing unprompted", () => {
+	const state = createBudgetWarningState();
+	state.turnActive = true;
+
+	assert.equal(budgetWarningOnTick(state, 100_000, 0, 600_000), "none");
+	assert.equal(state.pending, false);
+	assert.equal(budgetWarningOnTurnEnd(state, "toolUse"), "none");
 });

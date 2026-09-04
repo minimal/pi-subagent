@@ -96,8 +96,9 @@ TODO: The cwd will break the KV cache because pi itself injects the current work
 Every run gets a wall-clock limit (`timeout`, default **600s**) and a turn limit (`maxTurns`, default **50**), stated up front in the task message. Sub-agents manage the budget with:
 
 - **`subagent_budget` tool** — the sub-agent can check remaining time and turn usage at any time. The identical definition is also registered in the parent (where calling it returns an error) so both processes send the same tool list — otherwise the local LLM server's fixed prompt prefix breaks the child's first-call KV cache.
-- **Automated warning** — when remaining time drops to ~25% of the limit (clamped to 60–240s), a steering message is injected telling the sub-agent to stop new work and write its final report.
+- **Automated warning** — when remaining time drops to ~25% of the limit (clamped to 60–240s), a steering message is injected telling the sub-agent to stop new work and write its final report. The warning is only sent at a turn boundary, and is dropped if that turn already delivered the final report — a late warning must never burn a whole turn on an acknowledgement.
 - **Timeout grace** — when the limit is hit the child is *not* killed immediately: it gets up to 180s (override with `PI_SUBAGENT_TIMEOUT_GRACE_MS`) to finish its in-flight turn and exit cleanly. Only a child still running after the grace period is SIGTERM→SIGKILL'ed, so final reports in progress are not lost.
+- **Finishing on the last turn counts** — if the child uses its full turn budget and delivers a complete final report on the last allowed turn, the run is reported as a success. A run only fails as `max_turns` when it reaches the limit *without* a finished final report.
 - **No output = error** — if the child exits cleanly but produced no final text (e.g. a thinking-only response), the result is reported to the parent as an error instead of a hollow success.
 
 ### Sequential Execution

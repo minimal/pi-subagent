@@ -96,6 +96,73 @@ export function budgetWarningText(
 	);
 }
 
+// ---------------------------------------------------------------------------
+// One-shot warning state machine
+// ---------------------------------------------------------------------------
+
+export interface BudgetWarningState {
+	/** True once the warning was sent or deliberately dropped. */
+	settled: boolean;
+	/** Time threshold crossed; waiting for a turn boundary to send the warning. */
+	pending: boolean;
+	/** An LLM turn is currently in flight. */
+	turnActive: boolean;
+}
+
+export function createBudgetWarningState(): BudgetWarningState {
+	return { settled: false, pending: false, turnActive: false };
+}
+
+/**
+ * Watchdog tick decision (mutates `state`).
+ *
+ * Returns "hold" when the threshold is crossed mid-turn: Pi delivers steer
+ * messages only after the in-flight turn ends, so the decision is deferred to
+ * `budgetWarningOnTurnEnd`. That way a warning can never land after a final
+ * report and force a pointless extra turn (bead pi-subagent-l72).
+ */
+export function budgetWarningOnTick(
+	state: BudgetWarningState,
+	nowMs: number,
+	startedAtMs: number,
+	timeoutMs: number,
+): "none" | "send" | "hold" {
+	if (state.settled) return "none";
+	if (!budgetStatus(nowMs, startedAtMs, timeoutMs).shouldWarn) return "none";
+	if (state.turnActive) {
+		state.pending = true;
+		return "hold";
+	}
+	return "send";
+}
+
+/**
+ * Turn-boundary decision (mutates `state`).
+ *
+ * A turn that ends with stopReason "stop" is the final report: the run is
+ * over, so a pending warning is dropped ("drop") instead of being delivered
+ * after the report and consuming an extra turn. Any other stop reason means
+ * the child was still working, so a pending warning is sent ("send") and
+ * becomes visible before the model's next LLM call.
+ */
+export function budgetWarningOnTurnEnd(
+	state: BudgetWarningState,
+	stopReason: string | undefined,
+): "none" | "send" | "drop" {
+	if (state.settled) return "none";
+	if (stopReason === "stop") {
+		state.pending = false;
+		state.settled = true;
+		return "drop";
+	}
+	if (state.pending) {
+		state.pending = false;
+		state.settled = true;
+		return "send";
+	}
+	return "none";
+}
+
 /** Task message sent to the child, with the run's budget stated up front. */
 export function buildTaskMessage(
 	task: string,

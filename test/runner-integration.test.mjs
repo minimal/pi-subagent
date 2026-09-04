@@ -130,6 +130,33 @@ test("runAgent terminates the child when the turn limit is hit", async () => {
 	}
 });
 
+test("runAgent succeeds when the child reports on its final allowed turn", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, async () => {
+			const result = await runAgentWithFixture("fake-pi-maxturns-final.mjs", {
+				agentName: "final-turn-tester",
+				maxTurns: 2,
+			});
+
+			// Completing exactly on the turn limit is a success, not a failure.
+			assert.equal(result.maxTurnsExceeded, undefined);
+			assert.equal(result.stopReason, "stop");
+			assert.equal(result.exitCode, 0);
+			assert.equal(isResultSuccess(result), true);
+			assert.equal(isResultError(result), false);
+			assert.equal(result.usage.turns, 2);
+			assert.equal(
+				getFinalAssistantText(result.messages),
+				"Done in the allotted turns.",
+			);
+		});
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});
+
 test("persistSubagentSession copies the run session into the sub-agent session dir", async () => {
 	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
 
