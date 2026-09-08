@@ -33,6 +33,7 @@ import {
 	DEFAULT_MAX_TURNS,
 	budgetWarningOnTick,
 	budgetWarningOnTurnEnd,
+	budgetWarningOnAgentEnd,
 	createBudgetWarningState,
 	describeSubagentBudget,
 	budgetWarningText,
@@ -329,6 +330,10 @@ export default function (pi: ExtensionAPI) {
 		const watchdogMs = Number(process.env.PI_SUBAGENT_WATCHDOG_MS) || 5_000;
 		const warning = createBudgetWarningState();
 		let watcher: ReturnType<typeof setInterval> | undefined;
+		// Set once the run has ended: nothing is ever sent after agent_end, even
+		// if a watchdog tick fires while the process is shutting down (bead
+		// pi-subagent-few).
+		let agentEnded = false;
 
 		const stopWatching = () => {
 			if (watcher) {
@@ -339,11 +344,13 @@ export default function (pi: ExtensionAPI) {
 
 		// One-shot low-budget warning, injected as a steering message so the
 		// model sees it before its next LLM call. Never sent after a final
-		// report (bead pi-subagent-l72).
+		// report (bead pi-subagent-l72) or after the run has ended (bead
+		// pi-subagent-few).
 		const sendWarning = () => {
 			warning.pending = false;
 			warning.settled = true;
 			stopWatching();
+			if (agentEnded) return;
 			try {
 				pi.sendUserMessage(
 					budgetWarningText(Date.now(), childStartedAtMs, childTimeoutMs),
@@ -367,6 +374,15 @@ export default function (pi: ExtensionAPI) {
 			const action = budgetWarningOnTurnEnd(warning, stopReason);
 			if (action === "send") sendWarning();
 			else if (action === "drop") stopWatching();
+		});
+
+		// The run is over: settle any pending warning and stop the watchdog so
+		// no tick in the shutdown window can send after the final output
+		// (bead pi-subagent-few).
+		pi.on("agent_end", () => {
+			agentEnded = true;
+			budgetWarningOnAgentEnd(warning);
+			stopWatching();
 		});
 
 		watcher = setInterval(() => {

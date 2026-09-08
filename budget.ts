@@ -163,6 +163,23 @@ export function budgetWarningOnTurnEnd(
 	return "none";
 }
 
+/**
+ * Run-end decision (mutates `state`).
+ *
+ * agent_end is the true end of the run: nothing sent after it can reach the
+ * model in time. A steer queued here would either burn a pointless extra
+ * turn after the final report or land during shutdown (bead
+ * pi-subagent-few). Settles any pending warning so later ticks are no-ops.
+ */
+export function budgetWarningOnAgentEnd(
+	state: BudgetWarningState,
+): "none" | "drop" {
+	if (state.settled) return "none";
+	state.pending = false;
+	state.settled = true;
+	return "drop";
+}
+
 /** Task message sent to the child, with the run's budget stated up front. */
 export function buildTaskMessage(
 	task: string,

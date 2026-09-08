@@ -4,6 +4,7 @@ import {
 	budgetStatus,
 	buildChildEnv,
 	buildTaskMessage,
+	budgetWarningOnAgentEnd,
 	budgetWarningOnTick,
 	budgetWarningOnTurnEnd,
 	budgetWarningText,
@@ -101,4 +102,27 @@ test("warning stays quiet until the threshold and sends nothing unprompted", () 
 	assert.equal(budgetWarningOnTick(state, 100_000, 0, 600_000), "none");
 	assert.equal(state.pending, false);
 	assert.equal(budgetWarningOnTurnEnd(state, "toolUse"), "none");
+});
+
+test("agent_end settles the warning so later ticks cannot send (pi-subagent-few)", () => {
+	const state = createBudgetWarningState();
+
+	// Last turn ended with a non-"stop" reason: the watcher is still live and
+	// a pending warning survives the turn boundary.
+	state.turnActive = true;
+	assert.equal(budgetWarningOnTick(state, 510_000, 0, 600_000), "hold");
+	assert.equal(budgetWarningOnTurnEnd(state, "length"), "send");
+
+	// A second run where the tick fires after the last turn boundary but
+	// before agent_end: still "send" until the run ends.
+	const lingering = createBudgetWarningState();
+	assert.equal(budgetWarningOnTick(lingering, 510_000, 0, 600_000), "send");
+
+	// agent_end settles both: ticks and turn ends are no-ops afterwards.
+	assert.equal(budgetWarningOnAgentEnd(lingering), "drop");
+	assert.equal(budgetWarningOnAgentEnd(state), "none"); // already settled
+	assert.equal(budgetWarningOnTick(lingering, 590_000, 0, 600_000), "none");
+	assert.equal(budgetWarningOnTurnEnd(lingering, "length"), "none");
+	assert.equal(lingering.pending, false);
+	assert.equal(lingering.settled, true);
 });

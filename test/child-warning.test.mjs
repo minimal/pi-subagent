@@ -134,3 +134,24 @@ test("warning is sent at turn end while the child is still calling tools", async
 		assert.equal(sent.length, 1);
 	});
 });
+
+test("no warning is sent after the run has ended (pi-subagent-few)", async () => {
+	await withChildEnv(async ({ handlers, sent }) => {
+		const [agentEnd] = handlers["agent_end"] ?? [];
+		assert.ok(agentEnd, "child mode must register an agent_end handler");
+
+		// The run ends (e.g. the last turn was length-truncated, so no final
+		// report settled the warning). A watchdog tick then fires in the
+		// shutdown window with the threshold crossed: it must not send a steer
+		// after the final output.
+		agentEnd({ messages: [] });
+
+		await sleep(400);
+		assert.equal(sent.length, 0, "no steer may be sent after agent_end");
+
+		// Still quiet with more ticks: the watcher is stopped and the state is
+		// settled, so the shutdown window stays silent.
+		await sleep(400);
+		assert.equal(sent.length, 0);
+	});
+});
