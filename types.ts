@@ -7,7 +7,10 @@
  */
 
 import type { Message } from "@mariozechner/pi-ai";
-import { getFinalAssistantText } from "./runner-events.js";
+import {
+	getFinalAssistantText,
+	getLastAssistantMessageText,
+} from "./runner-events.js";
 
 /** Aggregated token usage from a subagent run. */
 export interface UsageStats {
@@ -72,9 +75,11 @@ export function aggregateUsage(results: SingleResult[]): UsageStats {
 	return total;
 }
 
-/** Whether the child emitted a final assistant text response. */
+/** Whether the child's LAST assistant message carries final text output. */
 export function hasFinalAssistantOutput(r: Pick<SingleResult, "messages">): boolean {
-	return getFinalAssistantText(r.messages).trim().length > 0;
+	// Final message only, without falling back to older text: a thinking-only
+	// final message means the caller got no report (bead pi-subagent-c73).
+	return getLastAssistantMessageText(r.messages).trim().length > 0;
 }
 
 /** Whether the child semantically completed the run. */
@@ -142,8 +147,11 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 	}
 
 	if (result.exitCode === 0 && !hasFinalAssistantOutput(result)) {
-		// Exited cleanly but produced no final assistant text (e.g. a
-		// thinking-only response). The caller got nothing useful.
+		// Exited cleanly but the LAST assistant message has no final text
+		// (e.g. a thinking-only response): the caller got nothing useful. The
+		// check uses the final message only, without falling back to older
+		// text (bead pi-subagent-c73).
+		result.exitCode = 1;
 		result.stopReason = "no_output";
 		result.errorMessage = "Sub-agent finished without a final text report.";
 		result.stderr = result.errorMessage;

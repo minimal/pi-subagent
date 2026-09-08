@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   getFinalAssistantText,
+  getLastAssistantMessageText,
   getResultSummaryText,
   processPiEvent,
   processPiJsonLine,
@@ -362,4 +363,65 @@ test("turn_start at the turn limit sets the flag", () => {
   // A new turn at the limit means another over-budget LLM call: stop now.
   assert.equal(processPiEvent({ type: "turn_start" }, result), false);
   assert.equal(result.maxTurnsExceeded, true);
+});
+
+test("getLastAssistantMessageText does not fall back to older text (pi-subagent-c73)", () => {
+  const early = {
+    role: "assistant",
+    content: [{ type: "text", text: "Progress: half done." }],
+    stopReason: "toolUse",
+    timestamp: 1,
+  };
+  const final = {
+    role: "assistant",
+    content: [{ type: "thinking", thinking: "No report written." }],
+    stopReason: "stop",
+    timestamp: 2,
+  };
+
+  // The final message is thinking-only: no text, no fall-through to the
+  // earlier message. getFinalAssistantText still falls through for display.
+  assert.equal(getLastAssistantMessageText([early, final]), "");
+  assert.equal(getFinalAssistantText([early, final]), "Progress: half done.");
+
+  // A text-bearing final message is returned in full.
+  const good = {
+    role: "assistant",
+    content: [{ type: "text", text: "All done." }],
+    stopReason: "stop",
+    timestamp: 3,
+  };
+  assert.equal(getLastAssistantMessageText([early, good]), "All done.");
+
+  // Empty history and non-array inputs yield the empty string.
+  assert.equal(getLastAssistantMessageText([]), "");
+  assert.equal(getLastAssistantMessageText(undefined), "");
+});
+
+test("getResultSummaryText never shows older text for a no_output run (pi-subagent-c73)", () => {
+  const result = makeResult();
+  result.exitCode = 1;
+  result.stopReason = "no_output";
+  result.errorMessage = "Sub-agent finished without a final text report.";
+  result.stderr = result.errorMessage;
+  result.messages = [
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "Stale earlier text." }],
+      stopReason: "toolUse",
+      timestamp: 1,
+    },
+  ];
+
+  assert.equal(
+    getResultSummaryText(result),
+    "Sub-agent finished without a final text report.",
+  );
+
+  // A healthy run still returns its final text.
+  const success = makeResult();
+  success.exitCode = 0;
+  success.stopReason = "stop";
+  success.messages = result.messages;
+  assert.equal(getResultSummaryText(success), "Stale earlier text.");
 });

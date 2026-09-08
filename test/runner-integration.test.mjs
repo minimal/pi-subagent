@@ -404,3 +404,35 @@ test("runAgent treats an exit-0 child with no final text as an error", async () 
 		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
 	}
 });
+
+test("runAgent classifies a thinking-only finish after earlier text as no_output (pi-subagent-c73)", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, async () => {
+			// The child wrote text earlier, but its FINAL message is
+			// thinking-only with stopReason "stop". Classification must use the
+			// final message only: no stale-text success, exit 1.
+			const result = await runAgentWithFixture("fake-pi-stale-text.mjs", {
+				agentName: "stale-text-tester",
+			});
+
+			assert.equal(result.stopReason, "no_output");
+			assert.equal(result.exitCode, 1);
+			assert.equal(isResultSuccess(result), false);
+			assert.equal(isResultError(result), true);
+
+			const summary = getResultSummaryText(result);
+			assert.ok(
+				summary.includes("final text report"),
+				"summary should explain the missing report",
+			);
+			assert.ok(
+				!summary.includes("Progress: half done."),
+				"stale earlier text must not be presented as the report",
+			);
+		});
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});

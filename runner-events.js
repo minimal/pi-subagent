@@ -224,9 +224,44 @@ export function getFinalAssistantText(messages) {
   return "";
 }
 
+/**
+ * Non-empty text of the LAST assistant message only — no fall-through to
+ * older messages. Run classification uses this: a thinking-only final
+ * message means the caller got no report, even if earlier messages had
+ * text (bead pi-subagent-c73). getFinalAssistantText stays a backward scan
+ * for display summarization.
+ */
+export function getLastAssistantMessageText(messages) {
+  if (!Array.isArray(messages)) return "";
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!message || message.role !== "assistant" || !Array.isArray(message.content)) {
+      continue;
+    }
+
+    for (const part of message.content) {
+      if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
+        return part.text;
+      }
+    }
+
+    // Last assistant message found and it has no text: do not fall through
+    // to older messages.
+    return "";
+  }
+
+  return "";
+}
+
 export function getResultSummaryText(result) {
-  const finalText = getFinalAssistantText(result?.messages);
-  if (finalText) return finalText;
+  // A no_output classification means the final message carried no text:
+  // older text must not be shown as if it were the report (bead
+  // pi-subagent-c73).
+  if (result?.stopReason !== "no_output") {
+    const finalText = getFinalAssistantText(result?.messages);
+    if (finalText) return finalText;
+  }
 
   if (typeof result?.errorMessage === "string" && result.errorMessage.trim()) {
     return result.errorMessage.trim();
