@@ -224,3 +224,142 @@ test("turn limit reached without a final report still blocks at turn_end", () =>
   assert.equal(silent.maxTurnsExceeded, true);
   assert.equal(silent.stopReason, "max_turns");
 });
+
+test("post-agent_end housekeeping events do not flip a clean at-limit run (pi-subagent-rdf)", () => {
+  const makeMsg = (i, stopReason, text) => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    model: "test-model",
+    stopReason,
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: i,
+  });
+
+  const result = makeResult();
+  result.maxTurnsLimit = 2;
+
+  processPiEvent({ type: "message_end", message: makeMsg(1, "toolUse", "Working") }, result);
+  const report = makeMsg(2, "stop", "All done.");
+  processPiEvent({ type: "message_end", message: report }, result);
+  processPiEvent({ type: "turn_end", message: report, toolResults: [] }, result);
+  processPiEvent({ type: "agent_end", messages: result.messages }, result);
+  assert.equal(result.sawAgentEnd, true);
+
+  // Real pi emits housekeeping AFTER agent_end (auto-compaction, retries,
+  // session bookkeeping). None of it may fail the completed run.
+  assert.equal(processPiEvent({ type: "compaction_start" }, result), false);
+  assert.equal(processPiEvent({ type: "compaction_end" }, result), false);
+  assert.equal(processPiEvent({ type: "auto_retry_started", attempt: 2 }, result), false);
+  assert.equal(processPiEvent({ type: "session_info" }, result), false);
+
+  assert.equal(result.maxTurnsExceeded, undefined);
+  assert.equal(result.stopReason, "stop");
+  assert.equal(result.usage.turns, 2);
+  assert.equal(result.messages.length, 2);
+});
+
+test("the max-turns flag is terminal: turn_end cannot re-add a blocked message (pi-subagent-hom)", () => {
+  const makeMsg = (i, text) => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    model: "test-model",
+    stopReason: "stop",
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: i,
+  });
+
+  const result = makeResult();
+  result.maxTurnsLimit = 1;
+
+  const report = makeMsg(1, "All done.");
+  processPiEvent({ type: "message_end", message: report }, result);
+  assert.equal(result.usage.turns, 1);
+
+  // A steer after the report triggers one more assistant message: blocked.
+  const extra = makeMsg(2, "Extra turn after the report");
+  assert.equal(processPiEvent({ type: "message_end", message: extra }, result), false);
+  assert.equal(result.maxTurnsExceeded, true);
+
+  // pi replays the same message on turn_end: the terminal flag must keep the
+  // result frozen (no turn increment, no message added, no metadata change).
+  assert.equal(processPiEvent({ type: "turn_end", message: extra, toolResults: [] }, result), false);
+  assert.equal(result.usage.turns, 1);
+  assert.equal(result.messages.length, 1);
+  assert.equal(getFinalAssistantText(result.messages), "All done.");
+});
+
+test("a gate-passed turn_end carrying a new message at the limit is blocked (pi-subagent-hom)", () => {
+  const makeMsg = (i, stopReason, text) => ({
+    role: "assistant",
+    content: [{ type: "text", text }],
+    model: "test-model",
+    stopReason,
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: i,
+  });
+
+  const result = makeResult();
+  result.maxTurnsLimit = 2;
+
+  processPiEvent({ type: "message_end", message: makeMsg(1, "toolUse", "Working") }, result);
+  const report = makeMsg(2, "stop", "All done.");
+  processPiEvent({ type: "message_end", message: report }, result);
+
+  // The whitelist passes this turn_end (the last recorded message is a clean
+  // report), but the event carries a never-seen message: over budget. It must
+  // be blocked before metadata/usage mutation, not silently added.
+  const extra = makeMsg(3, "stop", "Late extra turn");
+  assert.equal(processPiEvent({ type: "turn_end", message: extra, toolResults: [] }, result), false);
+  assert.equal(result.maxTurnsExceeded, true);
+  assert.equal(result.usage.turns, 2);
+  assert.equal(result.messages.length, 2);
+  assert.equal(getFinalAssistantText(result.messages), "All done.");
+});
+
+test("turn_start at the turn limit sets the flag", () => {
+  const makeMsg = (i) => ({
+    role: "assistant",
+    content: [{ type: "text", text: `Turn message ${i}` }],
+    model: "test-model",
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: i,
+  });
+
+  const result = makeResult();
+  result.maxTurnsLimit = 2;
+  processPiEvent({ type: "message_end", message: makeMsg(1) }, result);
+  processPiEvent({ type: "message_end", message: makeMsg(2) }, result);
+  assert.equal(result.maxTurnsExceeded, undefined);
+
+  // A new turn at the limit means another over-budget LLM call: stop now.
+  assert.equal(processPiEvent({ type: "turn_start" }, result), false);
+  assert.equal(result.maxTurnsExceeded, true);
+});

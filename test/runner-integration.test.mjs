@@ -100,6 +100,48 @@ test("runAgent persists the sub-agent session file (fork + child turns)", async 
 	}
 });
 
+test("runAgent waits for the child before persisting the session (pi-subagent-o2q)", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+	const tmpDirsBefore = new Set(listForkTempDirs());
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, async () => {
+			// The fixture lingers past the semantic-completion grace and appends
+			// a line to its session file only when SIGTERM arrives. The runner
+			// must let the child exit before copying the file and removing the
+			// temp dir, or the late line is missing from the persisted copy.
+			const result = await runAgentWithFixture("fake-pi-late-session-write.mjs", {
+				agentName: "late-write-tester",
+			});
+
+			assert.equal(result.exitCode, 0);
+			assert.equal(isResultSuccess(result), true);
+			assert.ok(result.sessionFile, "sessionFile should be set");
+
+			const lines = fs
+				.readFileSync(result.sessionFile, "utf8")
+				.split("\n")
+				.filter((l) => l.trim());
+			for (const line of lines) JSON.parse(line); // persisted copy is valid JSONL
+			assert.equal(lines.length, 3);
+			assert.ok(lines[0].includes("parent-session"), "first line is the fork header");
+			assert.ok(lines[1].includes("parent turn"), "second line is the parent turn");
+			assert.ok(
+				lines[2].includes("[fake-pi] late shutdown write"),
+				"third line is the child's late shutdown write",
+			);
+
+			const tmpDirsAfter = listForkTempDirs();
+			assert.ok(
+				tmpDirsAfter.every((d) => tmpDirsBefore.has(d)),
+				"fork temp dir should be cleaned up",
+			);
+		});
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});
+
 test("runAgent terminates the child when the turn limit is hit", async () => {
 	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
 
@@ -151,6 +193,37 @@ test("runAgent succeeds when the child reports on its final allowed turn", async
 				getFinalAssistantText(result.messages),
 				"Done in the allotted turns.",
 			);
+		});
+	} finally {
+		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
+	}
+});
+
+test("runAgent succeeds when post-agent_end housekeeping arrives at the turn limit (pi-subagent-rdf)", async () => {
+	const tmpAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-test-"));
+
+	try {
+		await withEnv("PI_CODING_AGENT_DIR", tmpAgentDir, async () => {
+			// Exactly at the limit and below it: the realistic stream ends with
+			// compaction_start/compaction_end after agent_end. Housekeeping must
+			// not flip the completed run to max_turns (which also killed the
+			// child mid-compaction, so it could not exit cleanly).
+			for (const maxTurns of [2, 50]) {
+				const result = await runAgentWithFixture("fake-pi-housekeeping.mjs", {
+					agentName: `housekeeping-${maxTurns}`,
+					maxTurns,
+				});
+
+				assert.equal(result.maxTurnsExceeded, undefined);
+				assert.equal(result.exitCode, 0);
+				assert.equal(result.stopReason, "stop");
+				assert.equal(isResultSuccess(result), true);
+				assert.equal(result.usage.turns, 2);
+				assert.equal(
+					getFinalAssistantText(result.messages),
+					"Done in the allotted turns.",
+				);
+			}
 		});
 	} finally {
 		fs.rmSync(tmpAgentDir, { recursive: true, force: true });
