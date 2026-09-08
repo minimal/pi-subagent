@@ -290,6 +290,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     let wasAborted = false;
     let timedOut = false;
 
+    let resolveChildClosed: (() => void) | undefined;
+    // Resolves when the child has actually exited ("close" or "error"). The
+    // spawn promise itself can resolve earlier (semantic completion resolves
+    // before the terminated child is reaped).
+    const childClosed = new Promise<void>((resolve) => {
+      resolveChildClosed = resolve;
+    });
+
     const exitCode = await new Promise<number>((resolve) => {
       const { command, prefixArgs = [] } = testSpawn ?? resolvePiSpawn();
       const proc = spawn(command, [...prefixArgs, ...piArgs], {
@@ -441,12 +449,16 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       proc.on("close", (code) => {
         didClose = true;
+        resolveChildClosed?.();
         clearTimers();
-        if (buffer.trim()) flushBufferedLines(buffer);
+        // A settled run (semantic completion, timeout, abort) is final: late
+        // child output must not mutate the result.
+        if (!settled && buffer.trim()) flushBufferedLines(buffer);
         finish(code ?? 0);
       });
 
       proc.on("error", (err) => {
+        resolveChildClosed?.();
         if (!result.stderr.trim()) result.stderr = err.message;
         clearTimers();
         finish(1);
@@ -464,6 +476,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         else signal.addEventListener("abort", abortHandler, { once: true });
       }
     });
+
+    // The spawn promise can resolve while the child is still alive (semantic
+    // completion sends SIGTERM; pi's shutdown handler is async). Wait —
+    // bounded by the SIGKILL fallback window — for the child to actually exit
+    // before the finally block copies the session file and deletes the temp
+    // dir, so persistence cannot race a live writer (bead pi-subagent-o2q).
+    await Promise.race([
+      childClosed,
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, SIGKILL_TIMEOUT_MS + KILL_DRAIN_MS);
+        timer.unref?.();
+      }),
+    ]);
 
     result.exitCode = exitCode;
     return normalizeCompletedResult(result, wasAborted);
