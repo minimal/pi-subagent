@@ -18,7 +18,7 @@ function looksLikeExplicitRelativePath(value) {
 function resolvePathArg(value, options = {}) {
   const { allowPackageSource = false, alwaysResolveRelative = false } = options;
   if (!value) return value;
-  if (allowPackageSource && (value.startsWith("npm:") || value.startsWith("git:"))) return value;
+  if (allowPackageSource && (value.startsWith("npm:") || value.startsWith("git:") || value.startsWith("builtin:"))) return value;
   if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
   if (path.isAbsolute(value)) return value;
 

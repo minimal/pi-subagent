@@ -154,3 +154,20 @@ test("inherits no-tools when the parent disabled tools", () => {
   assert.equal(parsed.fallbackTools, undefined);
   assert.equal(parsed.fallbackNoTools, true);
 });
+
+test("forwards builtin extension sources verbatim", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "-e",
+    "builtin:llama.cpp",
+    "--extension=builtin:mcp",
+  ]);
+
+  assert.deepEqual(parsed.extensionArgs, [
+    "-e",
+    "builtin:llama.cpp",
+    "--extension",
+    "builtin:mcp",
+  ]);
+});
